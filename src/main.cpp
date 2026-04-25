@@ -10,6 +10,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <unistd.h>
 
 enum class SortKey { Cpu, Mem, Pid };
 
@@ -119,7 +120,7 @@ void print_table(const std::vector<ProcessView>& views, std::size_t limit) {
         const auto& p = views[i];
         const double rss_mb = static_cast<double>(p.rss_kb) / 1024.0;
         std::cout << std::left << std::setw(8) << p.pid << std::setw(28) << p.comm.substr(0, 27)
-                  << std::right << std::setw(10) << std::fixed << std::setprecision(1) << p.cpu_percent
+                  << std::right << std::setw(10) << std::fixed << std::setprecision(2) << p.cpu_percent
                   << std::setw(12) << std::setprecision(1) << rss_mb << '\n';
     }
 }
@@ -157,16 +158,25 @@ int main(int argc, char** argv) {
     }
 
     ProcReader reader;
+    const long clock_ticks = sysconf(_SC_CLK_TCK);
+
+    auto prev_samples = reader.read_processes();
     std::unordered_map<int, ProcessSample> prev_map;
-    std::uint64_t prev_total = reader.read_total_cpu_ticks().value_or(0);
-    const auto cpus = std::max(1u, std::thread::hardware_concurrency());
+    prev_map.reserve(prev_samples.size());
+    for (const auto& p : prev_samples) {
+        prev_map[p.pid] = p;
+    }
 
-    bool first = true;
-    do {
+    auto prev_time = std::chrono::steady_clock::now();
+
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(opts->interval_ms));
+
         auto curr = reader.read_processes();
-        auto total = reader.read_total_cpu_ticks().value_or(prev_total);
+        const auto curr_time = std::chrono::steady_clock::now();
+        const double elapsed_seconds = std::chrono::duration<double>(curr_time - prev_time).count();
 
-        auto views = build_views(curr, prev_map, total, prev_total, cpus);
+        auto views = build_views(curr, prev_map, elapsed_seconds, clock_ticks);
         sort_views(views, opts->sort);
 
         if (opts->watch) {
@@ -175,18 +185,16 @@ int main(int argc, char** argv) {
         print_table(views, opts->limit);
 
         prev_map.clear();
+        prev_map.reserve(curr.size());
         for (const auto& p : curr) {
             prev_map[p.pid] = p;
         }
-        prev_total = total;
+        prev_time = curr_time;
 
         if (!opts->watch) {
             break;
         }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(opts->interval_ms));
-        first = false;
-    } while (opts->watch || first);
+    }
 
     return 0;
 }

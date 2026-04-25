@@ -130,24 +130,20 @@ std::vector<ProcessSample> ProcReader::read_processes() const {
 std::vector<ProcessView> build_views(
     const std::vector<ProcessSample>& current,
     const std::unordered_map<int, ProcessSample>& previous,
-    std::uint64_t total_ticks_current,
-    std::uint64_t total_ticks_previous,
-    unsigned int cpu_count) {
+    double elapsed_seconds,
+    long clock_ticks_per_second) {
     std::vector<ProcessView> result;
     result.reserve(current.size());
-
-    const std::uint64_t total_delta =
-        total_ticks_current > total_ticks_previous ? total_ticks_current - total_ticks_previous : 0;
 
     for (const auto& proc : current) {
         double cpu = 0.0;
         const auto it = previous.find(proc.pid);
-        if (it != previous.end() && total_delta > 0) {
+        if (it != previous.end() && elapsed_seconds > 0.0 && clock_ticks_per_second > 0) {
             const auto prev_total = it->second.utime_ticks + it->second.stime_ticks;
             const auto cur_total = proc.utime_ticks + proc.stime_ticks;
             const auto proc_delta = cur_total > prev_total ? cur_total - prev_total : 0;
-            cpu = static_cast<double>(proc_delta) * 100.0 * static_cast<double>(cpu_count) /
-                  static_cast<double>(total_delta);
+            const auto elapsed_ticks = elapsed_seconds * static_cast<double>(clock_ticks_per_second);
+            cpu = static_cast<double>(proc_delta) * 100.0 / elapsed_ticks;
         }
 
         result.push_back(ProcessView{proc.pid, proc.comm, cpu, proc.rss_kb});

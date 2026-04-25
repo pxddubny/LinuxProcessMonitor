@@ -20,6 +20,5 @@ private:
 std::vector<ProcessView> build_views(
     const std::vector<ProcessSample>& current,
     const std::unordered_map<int, ProcessSample>& previous,
-    std::uint64_t total_ticks_current,
-    std::uint64_t total_ticks_previous,
-    unsigned int cpu_count);
+    double elapsed_seconds,
+    long clock_ticks_per_second);
