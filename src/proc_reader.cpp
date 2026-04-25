@@ -93,10 +93,26 @@ std::optional<ProcessSample> ProcReader::read_process(int pid) const {
         }
     }
 
-    std::ifstream comm_file(base + "/comm");
-    std::string comm_line;
-    if (std::getline(comm_file, comm_line) && !comm_line.empty()) {
-        comm = comm_line;
+    std::ifstream cmdline_file(base + "/cmdline", std::ios::binary);
+    std::string cmdline;
+    if (cmdline_file) {
+        std::getline(cmdline_file, cmdline, '\0');
+        if (!cmdline.empty()) {
+            std::string arg;
+            while (std::getline(cmdline_file, arg, '\0')) {
+                cmdline.push_back(' ');
+                cmdline += arg;
+            }
+            comm = cmdline;
+        }
+    }
+
+    if (comm.empty()) {
+        std::ifstream comm_file(base + "/comm");
+        std::string comm_line;
+        if (std::getline(comm_file, comm_line) && !comm_line.empty()) {
+            comm = comm_line;
+        }
     }
 
     return ProcessSample{pid, comm, *utime, *stime, rss_kb};
