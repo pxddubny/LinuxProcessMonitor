@@ -157,22 +157,15 @@ int main(int argc, char** argv) {
     }
 
     ProcReader reader;
+    std::unordered_map<int, ProcessSample> prev_map;
+    std::uint64_t prev_total = reader.read_total_cpu_ticks().value_or(0);
     const auto cpus = std::max(1u, std::thread::hardware_concurrency());
 
-    auto prev_samples = reader.read_processes();
-    std::unordered_map<int, ProcessSample> prev_map;
-    prev_map.reserve(prev_samples.size());
-    for (const auto& p : prev_samples) {
-        prev_map[p.pid] = p;
-    }
-
-    std::uint64_t prev_total = reader.read_total_cpu_ticks().value_or(0);
-
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(opts->interval_ms));
-
+    bool first = true;
+    do {
         auto curr = reader.read_processes();
         auto total = reader.read_total_cpu_ticks().value_or(prev_total);
+
         auto views = build_views(curr, prev_map, total, prev_total, cpus);
         sort_views(views, opts->sort);
 
@@ -182,7 +175,6 @@ int main(int argc, char** argv) {
         print_table(views, opts->limit);
 
         prev_map.clear();
-        prev_map.reserve(curr.size());
         for (const auto& p : curr) {
             prev_map[p.pid] = p;
         }
@@ -191,7 +183,10 @@ int main(int argc, char** argv) {
         if (!opts->watch) {
             break;
         }
-    }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(opts->interval_ms));
+        first = false;
+    } while (opts->watch || first);
 
     return 0;
 }
