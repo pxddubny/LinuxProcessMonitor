@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <sys/resource.h>
+#include <signal.h>
 #include <termios.h>
 #include <thread>
 #include <unordered_map>
@@ -19,6 +20,7 @@
 #include <vector>
 
 enum class SortKey { Cpu, Mem, Pid };
+volatile sig_atomic_t g_should_exit = 0;
 
 struct Options {
     bool watch{false};
@@ -65,6 +67,21 @@ private:
     bool enabled_{false};
     struct termios old_termios_ {};
 };
+
+void signal_handler(int) {
+    g_should_exit = 1;
+}
+
+void install_signal_handlers() {
+    struct sigaction sa {};
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGQUIT, &sa, nullptr);
+}
 
 void print_usage(const char* app) {
     std::cout
@@ -228,7 +245,9 @@ void draw_tui(const std::vector<ProcessView>& views,
               const std::string& status) {
     constexpr int comm_width = 100;
 
-    std::cout << "\033[2J\033[H";
+    if (isatty(STDOUT_FILENO)) {
+        std::cout << "\033[2J\033[H";
+    }
     std::cout << "Linux Process Monitor TUI | q quit | j/k move | s sort | t/x/p/c signals | +/- renice\n";
     std::cout << "Sort: " << sort_name(sort) << " | Interval: " << interval_ms
               << " ms | Processes: " << views.size() << '\n';
@@ -278,6 +297,8 @@ std::optional<char> read_key_nonblocking() {
 }
 
 int main(int argc, char** argv) {
+    install_signal_handlers();
+
     auto opts = parse_options(argc, argv);
     if (!opts) {
         print_usage(argv[0]);
@@ -313,14 +334,18 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    TerminalRawMode raw_mode;
+    const bool interactive_tui = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+    std::optional<TerminalRawMode> raw_mode;
+    if (interactive_tui) {
+        raw_mode.emplace();
+    }
 
     std::size_t selected = 0;
     std::size_t top_index = 0;
     std::string status = "ready";
 
     bool running = true;
-    while (running) {
+    while (running && !g_should_exit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(opts->interval_ms));
 
         auto curr = reader.read_processes();
@@ -347,7 +372,13 @@ int main(int argc, char** argv) {
 
         draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
 
-        for (int i = 0; i < 16; ++i) {
+        if (!interactive_tui) {
+            rebuild_prev_map(curr, prev_map);
+            prev_time = curr_time;
+            continue;
+        }
+
+        for (int i = 0; i < 16 && !g_should_exit; ++i) {
             auto key = read_key_nonblocking();
             if (!key.has_value()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -400,6 +431,8 @@ int main(int argc, char** argv) {
         prev_time = curr_time;
     }
 
-    std::cout << "\033[2J\033[H";
+    if (isatty(STDOUT_FILENO)) {
+        std::cout << "\033[2J\033[H";
+    }
     return 0;
 }
