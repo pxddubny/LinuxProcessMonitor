@@ -111,17 +111,18 @@ std::optional<Options> parse_options(int argc, char** argv) {
 }
 
 void print_table(const std::vector<ProcessView>& views, std::size_t limit) {
-    std::cout << std::left << std::setw(8) << "PID" << std::right << std::setw(10) << "CPU %"
-              << std::setw(12) << "RSS(MB)" << "  " << std::left << "COMMAND" << '\n';
-    std::cout << std::string(100, '-') << '\n';
+    constexpr int comm_width = 100;
+    std::cout << std::left << std::setw(8) << "PID" << std::setw(comm_width) << "COMM" << std::right
+              << std::setw(10) << "CPU %" << std::setw(12) << "RSS(MB)" << '\n';
+    std::cout << std::string(8 + comm_width + 10 + 12, '-') << '\n';
 
     std::size_t count = std::min(limit, views.size());
     for (std::size_t i = 0; i < count; ++i) {
         const auto& p = views[i];
         const double rss_mb = static_cast<double>(p.rss_kb) / 1024.0;
-        std::cout << std::left << std::setw(8) << p.pid << std::right << std::setw(10) << std::fixed
-                  << std::setprecision(2) << p.cpu_percent << std::setw(12) << std::setprecision(1)
-                  << rss_mb << "  " << std::left << p.comm << '\n';
+        std::cout << std::left << std::setw(8) << p.pid << std::setw(comm_width) << p.comm << std::right
+                  << std::setw(10) << std::fixed << std::setprecision(2) << p.cpu_percent << std::setw(12)
+                  << std::setprecision(1) << rss_mb << '\n';
     }
 }
 

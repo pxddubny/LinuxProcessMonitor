@@ -94,17 +94,9 @@ std::optional<ProcessSample> ProcReader::read_process(int pid) const {
     }
 
     std::ifstream cmdline_file(base + "/cmdline", std::ios::binary);
-    std::string cmdline;
+    std::string argv0;
     if (cmdline_file) {
-        std::getline(cmdline_file, cmdline, '\0');
-        if (!cmdline.empty()) {
-            std::string arg;
-            while (std::getline(cmdline_file, arg, '\0')) {
-                cmdline.push_back(' ');
-                cmdline += arg;
-            }
-            comm = cmdline;
-        }
+        std::getline(cmdline_file, argv0, '\0');
     }
 
     if (comm.empty()) {
@@ -112,6 +104,13 @@ std::optional<ProcessSample> ProcReader::read_process(int pid) const {
         std::string comm_line;
         if (std::getline(comm_file, comm_line) && !comm_line.empty()) {
             comm = comm_line;
+        }
+    }
+
+    if (!argv0.empty()) {
+        const auto base_name = std::filesystem::path(argv0).filename().string();
+        if (!base_name.empty() && base_name.rfind(comm, 0) == 0 && base_name.size() > comm.size()) {
+            comm = base_name;
         }
     }
 
