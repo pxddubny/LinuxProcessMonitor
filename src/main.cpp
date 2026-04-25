@@ -33,7 +33,9 @@ struct Options {
 class TerminalRawMode {
 public:
     TerminalRawMode() {
-        if (!isatty(STDIN_FILENO)) {
+        const bool stdin_tty = isatty(STDIN_FILENO);
+        const bool stdout_tty = isatty(STDOUT_FILENO);
+        if (!stdin_tty) {
             return;
         }
         if (tcgetattr(STDIN_FILENO, &old_termios_) != 0) {
@@ -49,15 +51,19 @@ public:
             return;
         }
         enabled_ = true;
-
-        std::cout << "\033[?25l"; // hide cursor
+        ansi_enabled_ = stdout_tty;
+        if (ansi_enabled_) {
+            std::cout << "\033[?1049h\033[2J\033[H\033[?25l"; // alternate screen + hide cursor
+        }
     }
 
     ~TerminalRawMode() {
         if (enabled_) {
             tcsetattr(STDIN_FILENO, TCSANOW, &old_termios_);
         }
-        std::cout << "\033[?25h"; // show cursor
+        if (ansi_enabled_) {
+            std::cout << "\033[0m\033[?25h\033[?1049l"; // reset + show cursor + leave alternate screen
+        }
     }
 
     TerminalRawMode(const TerminalRawMode&) = delete;
@@ -65,6 +71,7 @@ public:
 
 private:
     bool enabled_{false};
+    bool ansi_enabled_{false};
     struct termios old_termios_ {};
 };
 
@@ -245,16 +252,34 @@ void draw_tui(const std::vector<ProcessView>& views,
               const std::string& status) {
     constexpr int comm_width = 100;
 
-    if (isatty(STDOUT_FILENO)) {
-        std::cout << "\033[2J\033[H";
+    const bool color = isatty(STDOUT_FILENO);
+    if (color) {
+        std::cout << "\033[H\033[J";
+        std::cout << "\033[1;36m";
     }
     std::cout << "Linux Process Monitor TUI | q quit | j/k move | s sort | t/x/p/c signals | +/- renice\n";
+    if (color) {
+        std::cout << "\033[0m";
+    }
     std::cout << "Sort: " << sort_name(sort) << " | Interval: " << interval_ms
               << " ms | Processes: " << views.size() << '\n';
-    std::cout << "Status: " << status << '\n';
+    if (color) {
+        std::cout << "\033[1;32m";
+    }
+    std::cout << "Status: " << status;
+    if (color) {
+        std::cout << "\033[0m";
+    }
+    std::cout << '\n';
 
+    if (color) {
+        std::cout << "\033[1;34m";
+    }
     std::cout << std::left << std::setw(2) << " " << std::setw(8) << "PID" << std::setw(comm_width) << "COMM"
               << std::right << std::setw(10) << "CPU %" << std::setw(12) << "RSS(MB)" << '\n';
+    if (color) {
+        std::cout << "\033[0m";
+    }
     std::cout << std::string(2 + 8 + comm_width + 10 + 12, '-') << '\n';
 
     const std::size_t end = std::min(views.size(), top_index + limit);
@@ -263,17 +288,27 @@ void draw_tui(const std::vector<ProcessView>& views,
         const bool is_selected = (i == selected);
         const double rss_mb = static_cast<double>(p.rss_kb) / 1024.0;
 
+        if (is_selected && color) {
+            std::cout << "\033[7m";
+        }
         std::cout << (is_selected ? ">" : " ") << " ";
         std::cout << std::left << std::setw(8) << p.pid << std::setw(comm_width) << p.comm;
 
-        if (p.cpu_percent >= 50.0) {
+        if (color && p.cpu_percent >= 50.0) {
             std::cout << "\033[31m";
-        } else if (p.cpu_percent >= 20.0) {
+        } else if (color && p.cpu_percent >= 20.0) {
             std::cout << "\033[33m";
         }
 
-        std::cout << std::right << std::setw(10) << std::fixed << std::setprecision(2) << p.cpu_percent
-                  << "\033[0m" << std::setw(12) << std::setprecision(1) << rss_mb << '\n';
+        std::cout << std::right << std::setw(10) << std::fixed << std::setprecision(2) << p.cpu_percent;
+        if (color) {
+            std::cout << "\033[0m";
+        }
+        std::cout << std::setw(12) << std::setprecision(1) << rss_mb;
+        if (is_selected && color) {
+            std::cout << "\033[0m";
+        }
+        std::cout << '\n';
     }
 
     std::cout.flush();
