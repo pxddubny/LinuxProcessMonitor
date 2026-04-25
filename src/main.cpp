@@ -230,16 +230,16 @@ SortKey next_sort(SortKey key) {
 void print_table(const std::vector<ProcessView>& views, std::size_t limit) {
     constexpr int comm_width = 100;
     std::cout << std::left << std::setw(8) << "PID" << std::setw(comm_width) << "COMM" << std::right
-              << std::setw(10) << "CPU %" << std::setw(12) << "RSS(MB)" << '\n';
-    std::cout << std::string(8 + comm_width + 10 + 12, '-') << '\n';
+              << std::setw(6) << "NI" << std::setw(10) << "CPU %" << std::setw(12) << "RSS(MB)" << '\n';
+    std::cout << std::string(8 + comm_width + 6 + 10 + 12, '-') << '\n';
 
     std::size_t count = std::min(limit, views.size());
     for (std::size_t i = 0; i < count; ++i) {
         const auto& p = views[i];
         const double rss_mb = static_cast<double>(p.rss_kb) / 1024.0;
         std::cout << std::left << std::setw(8) << p.pid << std::setw(comm_width) << p.comm << std::right
-                  << std::setw(10) << std::fixed << std::setprecision(2) << p.cpu_percent << std::setw(12)
-                  << std::setprecision(1) << rss_mb << '\n';
+                  << std::setw(6) << p.nice << std::setw(10) << std::fixed << std::setprecision(2)
+                  << p.cpu_percent << std::setw(12) << std::setprecision(1) << rss_mb << '\n';
     }
 }
 
@@ -276,11 +276,12 @@ void draw_tui(const std::vector<ProcessView>& views,
         std::cout << "\033[1;34m";
     }
     std::cout << std::left << std::setw(2) << " " << std::setw(8) << "PID" << std::setw(comm_width) << "COMM"
-              << std::right << std::setw(10) << "CPU %" << std::setw(12) << "RSS(MB)" << '\n';
+              << std::right << std::setw(6) << "NI" << std::setw(10) << "CPU %" << std::setw(12) << "RSS(MB)"
+              << '\n';
     if (color) {
         std::cout << "\033[0m";
     }
-    std::cout << std::string(2 + 8 + comm_width + 10 + 12, '-') << '\n';
+    std::cout << std::string(2 + 8 + comm_width + 6 + 10 + 12, '-') << '\n';
 
     const std::size_t end = std::min(views.size(), top_index + limit);
     for (std::size_t i = top_index; i < end; ++i) {
@@ -300,7 +301,8 @@ void draw_tui(const std::vector<ProcessView>& views,
             std::cout << "\033[33m";
         }
 
-        std::cout << std::right << std::setw(10) << std::fixed << std::setprecision(2) << p.cpu_percent;
+        std::cout << std::right << std::setw(6) << p.nice;
+        std::cout << std::setw(10) << std::fixed << std::setprecision(2) << p.cpu_percent;
         if (color) {
             std::cout << "\033[0m";
         }
@@ -378,17 +380,18 @@ int main(int argc, char** argv) {
     std::size_t selected = 0;
     std::size_t top_index = 0;
     std::string status = "ready";
+    std::vector<ProcessView> views;
+    auto next_refresh = std::chrono::steady_clock::now();
 
-    bool running = true;
-    while (running && !g_should_exit) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(opts->interval_ms));
-
+    auto refresh_data = [&]() {
         auto curr = reader.read_processes();
         const auto curr_time = std::chrono::steady_clock::now();
         const double elapsed_seconds = std::chrono::duration<double>(curr_time - prev_time).count();
 
-        auto views = build_views(curr, prev_map, elapsed_seconds, clock_ticks);
+        views = build_views(curr, prev_map, elapsed_seconds, clock_ticks);
         sort_views(views, opts->sort);
+        rebuild_prev_map(curr, prev_map);
+        prev_time = curr_time;
 
         if (views.empty()) {
             selected = 0;
@@ -404,66 +407,89 @@ int main(int argc, char** argv) {
                 top_index = selected - opts->limit + 1;
             }
         }
+    };
 
-        draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+    refresh_data();
+    draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+    next_refresh = std::chrono::steady_clock::now() + std::chrono::milliseconds(opts->interval_ms);
+
+    bool running = true;
+    while (running && !g_should_exit) {
+        bool redraw = false;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_refresh) {
+            refresh_data();
+            redraw = true;
+            next_refresh = now + std::chrono::milliseconds(opts->interval_ms);
+        }
 
         if (!interactive_tui) {
-            rebuild_prev_map(curr, prev_map);
-            prev_time = curr_time;
+            if (redraw) {
+                draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
             continue;
         }
 
-        for (int i = 0; i < 16 && !g_should_exit; ++i) {
-            auto key = read_key_nonblocking();
-            if (!key.has_value()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                continue;
+        auto key = read_key_nonblocking();
+        if (!key.has_value()) {
+            if (redraw) {
+                draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
             }
+            std::this_thread::sleep_for(std::chrono::milliseconds(12));
+            continue;
+        }
 
-            const char c = *key;
-            if (c == 'q') {
-                running = false;
-                break;
+        const char c = *key;
+        if (c == 'q') {
+            running = false;
+            continue;
+        }
+
+        if (views.empty()) {
+            status = "no processes";
+            draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+            continue;
+        }
+
+        const int pid = views[selected].pid;
+        if (c == 'j' && selected + 1 < views.size()) {
+            ++selected;
+            if (selected >= top_index + opts->limit) {
+                top_index = selected - opts->limit + 1;
             }
-            if (views.empty()) {
-                status = "no processes";
-                continue;
+            status = "selected pid " + std::to_string(views[selected].pid);
+        } else if (c == 'k' && selected > 0) {
+            --selected;
+            if (selected < top_index) {
+                top_index = selected;
             }
-
-            const int pid = views[selected].pid;
-
-            if (c == 'j' && selected + 1 < views.size()) {
-                ++selected;
-                status = "selected pid " + std::to_string(views[selected].pid);
-            } else if (c == 'k' && selected > 0) {
-                --selected;
-                status = "selected pid " + std::to_string(views[selected].pid);
-            } else if (c == 's') {
-                opts->sort = next_sort(opts->sort);
-                status = "sort changed to " + std::string(sort_name(opts->sort));
-            } else if (c == 't') {
-                status = execute_action(Action{ActionType::Kill, pid, std::nullopt});
-            } else if (c == 'x') {
-                status = execute_action(Action{ActionType::ForceKill, pid, std::nullopt});
-            } else if (c == 'p') {
-                status = execute_action(Action{ActionType::Stop, pid, std::nullopt});
-            } else if (c == 'c') {
-                status = execute_action(Action{ActionType::Continue, pid, std::nullopt});
-            } else if (c == '+' || c == '-') {
-                errno = 0;
-                const int current_nice = getpriority(PRIO_PROCESS, pid);
-                if (errno != 0) {
-                    status = "Не удалось прочитать nice: " + std::string(std::strerror(errno));
-                } else {
-                    int target = current_nice + (c == '+' ? 1 : -1);
-                    target = std::max(-20, std::min(19, target));
-                    status = execute_action(Action{ActionType::Renice, pid, target});
-                }
+            status = "selected pid " + std::to_string(views[selected].pid);
+        } else if (c == 's') {
+            opts->sort = next_sort(opts->sort);
+            sort_views(views, opts->sort);
+            status = "sort changed to " + std::string(sort_name(opts->sort));
+        } else if (c == 't') {
+            status = execute_action(Action{ActionType::Kill, pid, std::nullopt});
+        } else if (c == 'x') {
+            status = execute_action(Action{ActionType::ForceKill, pid, std::nullopt});
+        } else if (c == 'p') {
+            status = execute_action(Action{ActionType::Stop, pid, std::nullopt});
+        } else if (c == 'c') {
+            status = execute_action(Action{ActionType::Continue, pid, std::nullopt});
+        } else if (c == '+' || c == '-') {
+            errno = 0;
+            const int current_nice = getpriority(PRIO_PROCESS, pid);
+            if (errno != 0) {
+                status = "Не удалось прочитать nice: " + std::string(std::strerror(errno));
+            } else {
+                int target = current_nice + (c == '+' ? 1 : -1);
+                target = std::max(-20, std::min(19, target));
+                status = execute_action(Action{ActionType::Renice, pid, target});
             }
         }
 
-        rebuild_prev_map(curr, prev_map);
-        prev_time = curr_time;
+        draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
     }
 
     if (isatty(STDOUT_FILENO)) {

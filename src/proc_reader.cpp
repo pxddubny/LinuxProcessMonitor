@@ -19,6 +19,17 @@ std::optional<std::uint64_t> parse_uint64(const std::string& token) {
     }
     return value;
 }
+
+std::optional<int> parse_int(const std::string& token) {
+    int value = 0;
+    const auto* begin = token.data();
+    const auto* end = token.data() + token.size();
+    auto [ptr, ec] = std::from_chars(begin, end, value);
+    if (ec != std::errc{} || ptr != end) {
+        return std::nullopt;
+    }
+    return value;
+}
 } // namespace
 
 bool ProcReader::is_numeric(const std::string& value) {
@@ -72,14 +83,15 @@ std::optional<ProcessSample> ProcReader::read_process(int pid) const {
         tokens.push_back(token);
     }
 
-    // In remainder tokens, utime and stime are indices 11 and 12.
-    if (tokens.size() < 13) {
+    // In remainder tokens, utime/stime/nice are indices 11, 12, 16.
+    if (tokens.size() < 17) {
         return std::nullopt;
     }
 
     auto utime = parse_uint64(tokens[11]);
     auto stime = parse_uint64(tokens[12]);
-    if (!utime.has_value() || !stime.has_value()) {
+    auto nice = parse_int(tokens[16]);
+    if (!utime.has_value() || !stime.has_value() || !nice.has_value()) {
         return std::nullopt;
     }
 
@@ -114,7 +126,7 @@ std::optional<ProcessSample> ProcReader::read_process(int pid) const {
         }
     }
 
-    return ProcessSample{pid, comm, *utime, *stime, rss_kb};
+    return ProcessSample{pid, comm, *utime, *stime, *nice, rss_kb};
 }
 
 std::vector<ProcessSample> ProcReader::read_processes() const {
@@ -161,7 +173,7 @@ std::vector<ProcessView> build_views(
             cpu = static_cast<double>(proc_delta) * 100.0 / elapsed_ticks;
         }
 
-        result.push_back(ProcessView{proc.pid, proc.comm, cpu, proc.rss_kb});
+        result.push_back(ProcessView{proc.pid, proc.comm, cpu, proc.nice, proc.rss_kb});
     }
 
     return result;
