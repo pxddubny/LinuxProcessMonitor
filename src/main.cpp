@@ -258,7 +258,7 @@ void draw_tui(const std::vector<ProcessView>& views,
         std::cout << "\033[H\033[J";
         std::cout << "\033[1;36m";
     }
-    std::cout << "Linux Process Monitor TUI | q quit | j/k move | s sort | t/x/p/c signals | +/- renice\n";
+    std::cout << "Linux Process Monitor TUI | q quit | f pin process | j/k move | s sort | t/x/p/c signals | +/- renice\n";
     if (color) {
         std::cout << "\033[0m";
     }
