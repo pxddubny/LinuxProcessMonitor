@@ -95,7 +95,7 @@ void print_usage(const char* app) {
         << "Usage:\n"
         << "  " << app << " [--watch] [--interval ms] [--limit n] [--sort cpu|mem|pid]\n"
         << "\nInteractive TUI keys (with --watch):\n"
-        << "  q: quit | j/k: move | s: change sort\n"
+        << "  q: quit | j/k: move | s: change sort | f: pin/unpin selected pid\n"
         << "  t: SIGTERM | x: SIGKILL | p: SIGSTOP | c: SIGCONT\n"
         << "  +/-: renice selected process\n"
         << "\nOne-shot control commands:\n"
@@ -249,7 +249,8 @@ void draw_tui(const std::vector<ProcessView>& views,
               std::size_t limit,
               int interval_ms,
               SortKey sort,
-              const std::string& status) {
+              const std::string& status,
+              const std::optional<int>& pinned_pid) {
     constexpr int comm_width = 100;
 
     const bool color = isatty(STDOUT_FILENO);
@@ -263,6 +264,11 @@ void draw_tui(const std::vector<ProcessView>& views,
     }
     std::cout << "Sort: " << sort_name(sort) << " | Interval: " << interval_ms
               << " ms | Processes: " << views.size() << '\n';
+    if (pinned_pid.has_value()) {
+        std::cout << "Pinned PID: " << *pinned_pid << '\n';
+    } else {
+        std::cout << "Pinned PID: -\n";
+    }
     if (color) {
         std::cout << "\033[1;32m";
     }
@@ -380,6 +386,7 @@ int main(int argc, char** argv) {
     std::size_t selected = 0;
     std::size_t top_index = 0;
     std::string status = "ready";
+    std::optional<int> pinned_pid;
     std::vector<ProcessView> views;
     auto next_refresh = std::chrono::steady_clock::now();
 
@@ -396,8 +403,21 @@ int main(int argc, char** argv) {
         if (views.empty()) {
             selected = 0;
             top_index = 0;
+            pinned_pid.reset();
         } else {
-            if (selected >= views.size()) {
+            if (pinned_pid.has_value()) {
+                const auto it = std::find_if(views.begin(), views.end(), [&](const ProcessView& p) {
+                    return p.pid == *pinned_pid;
+                });
+                if (it != views.end()) {
+                    selected = static_cast<std::size_t>(std::distance(views.begin(), it));
+                } else {
+                    status = "pinned pid " + std::to_string(*pinned_pid) + " finished; unpinned";
+                    pinned_pid.reset();
+                }
+            }
+
+            if (!pinned_pid.has_value() && selected >= views.size()) {
                 selected = views.size() - 1;
             }
             if (selected < top_index) {
@@ -410,7 +430,7 @@ int main(int argc, char** argv) {
     };
 
     refresh_data();
-    draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+    draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status, pinned_pid);
     next_refresh = std::chrono::steady_clock::now() + std::chrono::milliseconds(opts->interval_ms);
 
     bool running = true;
@@ -425,7 +445,7 @@ int main(int argc, char** argv) {
 
         if (!interactive_tui) {
             if (redraw) {
-                draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+                draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status, pinned_pid);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
             continue;
@@ -434,7 +454,7 @@ int main(int argc, char** argv) {
         auto key = read_key_nonblocking();
         if (!key.has_value()) {
             if (redraw) {
-                draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+                draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status, pinned_pid);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(12));
             continue;
@@ -448,23 +468,31 @@ int main(int argc, char** argv) {
 
         if (views.empty()) {
             status = "no processes";
-            draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+            draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status, pinned_pid);
             continue;
         }
 
         const int pid = views[selected].pid;
-        if (c == 'j' && selected + 1 < views.size()) {
+        if (c == 'j' && selected + 1 < views.size() && !pinned_pid.has_value()) {
             ++selected;
             if (selected >= top_index + opts->limit) {
                 top_index = selected - opts->limit + 1;
             }
             status = "selected pid " + std::to_string(views[selected].pid);
-        } else if (c == 'k' && selected > 0) {
+        } else if (c == 'k' && selected > 0 && !pinned_pid.has_value()) {
             --selected;
             if (selected < top_index) {
                 top_index = selected;
             }
             status = "selected pid " + std::to_string(views[selected].pid);
+        } else if (c == 'f') {
+            if (pinned_pid.has_value() && *pinned_pid == pid) {
+                pinned_pid.reset();
+                status = "unpinned";
+            } else {
+                pinned_pid = pid;
+                status = "pinned pid " + std::to_string(pid);
+            }
         } else if (c == 's') {
             opts->sort = next_sort(opts->sort);
             sort_views(views, opts->sort);
@@ -489,7 +517,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status);
+        draw_tui(views, selected, top_index, opts->limit, opts->interval_ms, opts->sort, status, pinned_pid);
     }
 
     if (isatty(STDOUT_FILENO)) {
